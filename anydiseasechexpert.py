@@ -1,3 +1,6 @@
+# This code preprocesses CheXpert data, splits them into datasets and trains and validates a CheXpert model that is later evaluated.
+# Later this model (that didn't see Padchest data) is tested on those data
+
 import os
 import pandas as pd
 from PIL import Image
@@ -6,18 +9,18 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from torchvision import transforms
 import numpy as np
 
-# Define disease labels
+# disease labels
 disease_labels = [
     'No Finding', 'Enlarged Cardiomediastinum', 'Cardiomegaly', 'Lung Opacity',
     'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis',
     'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture', 'Support Devices'
 ]
 
-# Set pandas option to avoid warnings
+
 pd.set_option('future.no_silent_downcasting', True)
 base_dir = '/shared/home/nas6781/'
 
-# Custom Dataset Class with improved validation
+# chexpert class
 class CheXpertDataset(Dataset):
     def __init__(self, csv_file, transform=None, validate_files=False):
         self.data = pd.read_csv(csv_file)
@@ -86,16 +89,15 @@ class CheXpertDataset(Dataset):
         labels = labels.infer_objects(copy=False).astype(float)
         return image, torch.FloatTensor(labels.values)
 
-# Define Transformations
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize([0.5], [0.5])
 ])
 
-# No need for collate_fn if we validate the dataset first
+#50/50
 def get_balanced_binary_datasets(dataset, train_ratio=0.7, val_ratio=0.15):
-    """Creates balanced binary classification datasets"""
+    
     print("\nCreating balanced binary datasets...")
 
     pos_indices = []
@@ -133,7 +135,6 @@ def get_balanced_binary_datasets(dataset, train_ratio=0.7, val_ratio=0.15):
 
     return train_dataset, val_dataset, test_dataset
 
-# Binary collate function
 def binary_collate_fn(batch):
     images, labels = zip(*batch)
     images = torch.stack(images)
@@ -154,10 +155,6 @@ import json
 from torchvision import transforms
 from PIL import Image
 
-# Dataset and collate_fn assumed to be defined elsewhere:
-# - CheXpertDataset
-# - get_balanced_binary_datasets
-# - binary_collate_fn
 
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=10, patience=5):
     train_losses, val_losses = [], []
@@ -311,7 +308,7 @@ def main():
     full_dataset = CheXpertDataset(csv_file='/shared/home/nas6781/CheXpert-v1.0-small/train.csv', transform=None, validate_files=True)
     train_dataset, val_dataset, test_dataset = get_balanced_binary_datasets(full_dataset)
 
-    # Assign transforms
+    # transofmrations
     train_dataset.transform = train_transform
     val_dataset.transform = val_test_transform
     test_dataset.transform = val_test_transform
@@ -320,7 +317,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=binary_collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=binary_collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=binary_collate_fn)
-
+    # training
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = resnet18(pretrained=True)
     model.fc = nn.Linear(model.fc.in_features, 1)  # No Sigmoid inside model!
@@ -350,3 +347,268 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Subset
+from torchvision import transforms
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
+import json
+from torchvision.models import resnet18
+import pandas as pd
+import ast
+import os
+import pandas as pd
+import ast
+
+#padchest data
+df = pd.read_csv('/shared/home/nas6781/PADCHEST_chest_x_ray_images_labels_160K_01.02.19.csv')
+df = df.dropna(subset=['Labels', 'ImageID'])
+df['ImageID'] = df['ImageID'].astype(str)
+df['ImageID'] = df['ImageID'].str.replace('.dicom', '.png')
+df['ImageID'] = df['ImageID'].str.replace('.dcm', '.png')
+def safe_eval(val):
+    try:
+        return ast.literal_eval(str(val))
+    except:
+        return []
+
+df['Labels'] = df['Labels'].apply(safe_eval)
+
+df['no_findings'] = df['Labels'].apply(
+    lambda x: 1 if len(x) == 1 and isinstance(x[0], str) and x[0].strip().lower() == 'normal' else 0
+)
+#dataset
+class PadChestDataset(Dataset):
+    def __init__(self, dataframe, image_dir, transform=None):
+        self.df = dataframe.reset_index(drop=True)
+        self.image_dir = image_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        img_path = os.path.join(self.image_dir, row['ImageID'])
+
+        image = Image.open(img_path).convert('RGB')
+
+        if self.transform:
+            image = self.transform(image)
+
+        label = torch.tensor(row['no_findings'], dtype=torch.float32)
+        return image, label
+from torchvision import transforms
+
+from torch.utils.data import DataLoader
+
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5]*3, [0.5]*3)
+])
+
+dataset = PadChestDataset(df, image_dir=image_dir, transform=transform)
+loader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=2)
+
+images, labels = next(iter(loader))
+print("Batch shape:", images.shape)
+print("Batch labels:", labels[:5])
+
+
+import os
+
+image_dir = '/shared/home/nas6781/Padchest'
+existing_images = set(os.listdir(image_dir))
+
+df = df[df['ImageID'].isin(existing_images)]
+
+def load_padchest_data():
+    """Load and preprocess PadChest dataset"""
+    print("Loading PadChest data...")
+    df = pd.read_csv('/shared/home/nas6781/PADCHEST_chest_x_ray_images_labels_160K_01.02.19.csv')
+    df = df.dropna(subset=['Labels', 'ImageID'])
+    df['ImageID'] = df['ImageID'].astype(str)
+    df['ImageID'] = df['ImageID'].str.replace('.dicom', '.png')
+    df['ImageID'] = df['ImageID'].str.replace('.dcm', '.png')
+    
+    def safe_eval(val):
+        try:
+            return ast.literal_eval(str(val))
+        except:
+            return []
+    
+    df['Labels'] = df['Labels'].apply(safe_eval)
+    
+    # Create binary label for no findings
+    df['no_findings'] = df['Labels'].apply(
+        lambda x: 1 if len(x) == 1 and isinstance(x[0], str) and x[0].strip().lower() == 'normal' else 0
+    )
+    
+    # Filter for existing images
+    image_dir = '/shared/home/nas6781/Padchest'
+    existing_images = set(os.listdir(image_dir))
+    df = df[df['ImageID'].isin(existing_images)]
+    
+    print(f"Loaded {len(df)} PadChest images")
+    return df
+# pretrained model
+def load_chexpert_model(model_path, device):
+    """Load trained CheXpert model"""
+    print("Loading CheXpert model...")
+    model = resnet18(pretrained=False)
+    model.fc = nn.Linear(model.fc.in_features, 1)
+    model = model.to(device)
+    
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    print("Model loaded successfully")
+    return model
+
+def plot_roc_curve(labels, scores, save_path):
+    """Plot ROC curve"""
+    fpr, tpr, _ = roc_curve(labels, scores)
+    auc = roc_auc_score(labels, scores)
+    
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, label=f'AUC = {auc:.3f}')
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.title('ROC Curve (CheXpert on PadChest)')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(save_path)
+    plt.close()
+
+def plot_confusion_matrix(labels, preds, save_path):
+    """Plot confusion matrix"""
+    cm = confusion_matrix(labels, preds)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['No Finding', 'Finding'],
+                yticklabels=['No Finding', 'Finding'])
+    plt.title('Confusion Matrix (CheXpert on PadChest)')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.savefig(save_path)
+    plt.close()
+
+def plot_metrics_bar(metrics, save_path):
+    """Plot metrics as a bar chart"""
+    plt.figure(figsize=(10, 6))
+    metrics_names = list(metrics.keys())
+    values = list(metrics.values())
+    
+    bars = plt.bar(metrics_names, values)
+    plt.title('Performance Metrics (CheXpert on PadChest)')
+    plt.ylabel('Score')
+    plt.ylim(0, 1)
+    
+    # Add value labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height,
+                f'{height:.3f}',
+                ha='center', va='bottom')
+    
+    plt.grid(True, axis='y')
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+def evaluate_on_padchest(model, test_loader, device):
+    """Evaluate model on PadChest test set"""
+    print("Evaluating model on PadChest...")
+    model.eval()
+    all_labels, all_preds, all_scores = [], [], []
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            if images.size(0) == 0:
+                continue
+            images = images.to(device)
+            outputs = model(images)
+            probs = torch.sigmoid(outputs)
+            preds = (probs > 0.5).float()
+            
+            all_labels.append(labels.cpu())
+            all_preds.append(preds.cpu())
+            all_scores.append(probs.cpu())
+
+    all_labels = torch.cat(all_labels).numpy()
+    all_preds = torch.cat(all_preds).numpy()
+    all_scores = torch.cat(all_scores).numpy()
+
+    metrics = {
+        'accuracy': accuracy_score(all_labels, all_preds),
+        'precision': precision_score(all_labels, all_preds),
+        'recall': recall_score(all_labels, all_preds),
+        'f1': f1_score(all_labels, all_preds),
+        'auroc': roc_auc_score(all_labels, all_scores)
+    }
+
+    # Create plots
+    os.makedirs('evaluation_plots', exist_ok=True)
+    plot_roc_curve(all_labels, all_scores, 'evaluation_plots/roc_curve.png')
+    plot_confusion_matrix(all_labels, all_preds, 'evaluation_plots/confusion_matrix.png')
+    plot_metrics_bar(metrics, 'evaluation_plots/metrics.png')
+
+    return metrics
+
+def main():
+    # Set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # Load data and model
+    df = load_padchest_data()
+    
+    # Define transforms
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+
+    # Create dataset
+    padchest_dataset = PadChestDataset(
+        dataframe=df,
+        image_dir='/shared/home/nas6781/Padchest',
+        transform=transform
+    )
+
+    # Get test dataset
+    _, _, test_dataset = get_balanced_binary_datasets_fast(padchest_dataset)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=32,
+        shuffle=False,
+        num_workers=2,
+        collate_fn=binary_collate_fn
+    )
+
+    # Load CheXpert model
+    model = load_chexpert_model('chest_xray_binary_model.pth', device)
+
+    # Evaluate
+    metrics = evaluate_on_padchest(model, test_loader, device)
+
+    # Save results
+    with open('chexpert_on_padchest_results.json', 'w') as f:
+        json.dump(metrics, f, indent=2)
+
+    # Print results
+    print("\nEvaluation Results (CheXpert on PadChest):")
+    for metric, value in metrics.items():
+        print(f"{metric.capitalize()}: {value:.4f}")
+
+if __name__ == '__main__':
+    main() 
