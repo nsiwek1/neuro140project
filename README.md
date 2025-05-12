@@ -4,7 +4,13 @@ project for neuro 140 (human & artificial intelligence) - generazability of x-ra
 
 ## repo structure
 I used the Jupyter Notebook for most of my project but as i was reusing certain cells multiple times/with checking different versions of code
-Due to that the .ipynb files are not cleaned up, but they still show most of the results used in the paper. The .py files have cleaned version of code that should be better to read through
+Due to that the .ipynb files are not cleaned up, but they still show most of the results used in the paper. The .py files have cleaned version of code that should be better to read through.
+
+Final Writeup contains the details of methods, results and conclusions.
+
+## acknowledgements
+
+All code was written by me, experiment 3 version 2 was conceptually inspired by "A generalized deep learning model for multi-disease Chest X-Ray diagnostics" Bajwa et al.
 
 
 
