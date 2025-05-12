@@ -1,6 +1,7 @@
 # This code preprocesses CheXpert data, splits them into datasets and trains and validates a CheXpert model that is later evaluated.
 # Later this model (that didn't see Padchest data) is tested on those data
 
+#imports for both chexpert-chexpert and chexpert-padchest
 import os
 import pandas as pd
 from PIL import Image
@@ -8,6 +9,17 @@ import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 from torchvision import transforms
 import numpy as np
+import torch.nn as nn
+import torch.optim as optim
+from torchvision.models import resnet18
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
+import json
+from PIL import Image
+import ast
+import os
 
 # disease labels
 disease_labels = [
@@ -15,7 +27,6 @@ disease_labels = [
     'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis',
     'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture', 'Support Devices'
 ]
-
 
 pd.set_option('future.no_silent_downcasting', True)
 base_dir = '/shared/home/nas6781/'
@@ -30,7 +41,8 @@ class CheXpertDataset(Dataset):
 
         if validate_files:
             self.valid_indices = self.validate_dataset()
-
+            
+    # originally i had a subset of the files that are within .csv so many labels were not connected to images -> i still have it as a safety-step
     def validate_dataset(self):
         """Pre-filter dataset to only include valid images with labels"""
         print("Validating dataset files and labels...")
@@ -79,7 +91,7 @@ class CheXpertDataset(Dataset):
             # Return a black placeholder
             return torch.zeros(3, 224, 224), torch.zeros(len(self.disease_labels))
     
-        # Force resize BEFORE any other transform
+        # resize
         image = transforms.Resize((224, 224))(image)
         
         if self.transform:
@@ -95,7 +107,7 @@ transform = transforms.Compose([
     transforms.Normalize([0.5], [0.5])
 ])
 
-#50/50
+#50/50 split between normal and abnormal
 def get_balanced_binary_datasets(dataset, train_ratio=0.7, val_ratio=0.15):
     
     print("\nCreating balanced binary datasets...")
@@ -135,27 +147,14 @@ def get_balanced_binary_datasets(dataset, train_ratio=0.7, val_ratio=0.15):
 
     return train_dataset, val_dataset, test_dataset
 
+# switch specific diseases to findings so we have normal/abnormal
 def binary_collate_fn(batch):
     images, labels = zip(*batch)
     images = torch.stack(images)
     binary_labels = torch.stack([(label.sum() > 0).float().unsqueeze(0) for label in labels])
     return images, binary_labels
 
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision.models import resnet18
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
-import json
-from torchvision import transforms
-from PIL import Image
-
-
+# training model, with early stoppping if validation loss gets to high (overfiting)
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=10, patience=5):
     train_losses, val_losses = [], []
     best_val_loss = float('inf')
@@ -225,6 +224,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
     return model, train_losses, val_losses
 
+# training vs validation loss
 def plot_training_curves(train_losses, val_losses):
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, label='Train Loss')
@@ -291,6 +291,7 @@ def evaluate_model(model, test_loader, device):
     return metrics
 
 def main():
+    # preprocessing
     train_transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(),
@@ -308,11 +309,11 @@ def main():
     full_dataset = CheXpertDataset(csv_file='/shared/home/nas6781/CheXpert-v1.0-small/train.csv', transform=None, validate_files=True)
     train_dataset, val_dataset, test_dataset = get_balanced_binary_datasets(full_dataset)
 
-    # transofmrations
+    # transfomrations
     train_dataset.transform = train_transform
     val_dataset.transform = val_test_transform
     test_dataset.transform = val_test_transform
-
+    #data loading
     batch_size = 32
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=binary_collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=binary_collate_fn)
@@ -349,24 +350,7 @@ if __name__ == '__main__':
     main()
 
 
-
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
-from torchvision import transforms
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
-import json
-from torchvision.models import resnet18
-import pandas as pd
-import ast
-import os
-import pandas as pd
-import ast
-
-#padchest data
+#padchest data -> adjusting the labels to combine with imafes
 df = pd.read_csv('/shared/home/nas6781/PADCHEST_chest_x_ray_images_labels_160K_01.02.19.csv')
 df = df.dropna(subset=['Labels', 'ImageID'])
 df['ImageID'] = df['ImageID'].astype(str)
@@ -383,7 +367,8 @@ df['Labels'] = df['Labels'].apply(safe_eval)
 df['no_findings'] = df['Labels'].apply(
     lambda x: 1 if len(x) == 1 and isinstance(x[0], str) and x[0].strip().lower() == 'normal' else 0
 )
-#dataset
+
+# custom dataset
 class PadChestDataset(Dataset):
     def __init__(self, dataframe, image_dir, transform=None):
         self.df = dataframe.reset_index(drop=True)
@@ -404,9 +389,7 @@ class PadChestDataset(Dataset):
 
         label = torch.tensor(row['no_findings'], dtype=torch.float32)
         return image, label
-from torchvision import transforms
-
-from torch.utils.data import DataLoader
+        
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -422,13 +405,12 @@ print("Batch shape:", images.shape)
 print("Batch labels:", labels[:5])
 
 
-import os
-
 image_dir = '/shared/home/nas6781/Padchest'
 existing_images = set(os.listdir(image_dir))
 
 df = df[df['ImageID'].isin(existing_images)]
 
+# data loading
 def load_padchest_data():
     """Load and preprocess PadChest dataset"""
     print("Loading PadChest data...")
@@ -458,7 +440,8 @@ def load_padchest_data():
     
     print(f"Loaded {len(df)} PadChest images")
     return df
-# pretrained model
+    
+# pretrained model from chexpert
 def load_chexpert_model(model_path, device):
     """Load trained CheXpert model"""
     print("Loading CheXpert model...")
@@ -472,6 +455,7 @@ def load_chexpert_model(model_path, device):
     print("Model loaded successfully")
     return model
 
+#graphs and plots
 def plot_roc_curve(labels, scores, save_path):
     """Plot ROC curve"""
     fpr, tpr, _ = roc_curve(labels, scores)
@@ -512,7 +496,7 @@ def plot_metrics_bar(metrics, save_path):
     plt.ylabel('Score')
     plt.ylim(0, 1)
     
-    # Add value labels on top of bars
+    # plots adjustments
     for bar in bars:
         height = bar.get_height()
         plt.text(bar.get_x() + bar.get_width()/2., height,
@@ -578,14 +562,12 @@ def main():
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    # Create dataset
     padchest_dataset = PadChestDataset(
         dataframe=df,
         image_dir='/shared/home/nas6781/Padchest',
         transform=transform
     )
-
-    # Get test dataset
+    # balanced testing set
     _, _, test_dataset = get_balanced_binary_datasets_fast(padchest_dataset)
     test_loader = DataLoader(
         test_dataset,
@@ -595,17 +577,13 @@ def main():
         collate_fn=binary_collate_fn
     )
 
-    # Load CheXpert model
+    # testing
     model = load_chexpert_model('chest_xray_binary_model.pth', device)
 
-    # Evaluate
     metrics = evaluate_on_padchest(model, test_loader, device)
-
-    # Save results
     with open('chexpert_on_padchest_results.json', 'w') as f:
         json.dump(metrics, f, indent=2)
 
-    # Print results
     print("\nEvaluation Results (CheXpert on PadChest):")
     for metric, value in metrics.items():
         print(f"{metric.capitalize()}: {value:.4f}")
