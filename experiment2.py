@@ -1,26 +1,23 @@
+# Training on padcchest data,testing on padchest and chexpert
 
-
+# imports
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision.models import resnet18
+from torch.utils.data import DataLoader, Dataset, Subset
+from torchvision.models import resnet18, efficientnet_b0
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
 import json
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import os
-from torch.utils.data import Subset
-
-
+from tqdm import tqdm 
 from PIL import Image
-import torch
-from torch.utils.data import Dataset
 
-#dataset class
+# custom dataset class
 class PadChestDataset(Dataset):
     def __init__(self, dataframe, image_dir, transform=None):
         self.df = dataframe.reset_index(drop=True)
@@ -41,9 +38,7 @@ class PadChestDataset(Dataset):
 
         label = torch.tensor(row['no_findings'], dtype=torch.float32)
         return image, label
-from torchvision import transforms
 
-from torch.utils.data import DataLoader
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -51,27 +46,13 @@ transform = transforms.Compose([
     transforms.Normalize([0.5]*3, [0.5]*3)
 ])
 
+# data load 
 dataset = PadChestDataset(df, image_dir=image_dir, transform=transform)
 loader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=2)
 
 images, labels = next(iter(loader))
 print("Batch shape:", images.shape)
 print("Batch labels:", labels[:5])
-
-def plot_training_curves(train_losses, val_losses):
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(val_losses, label='Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig('loss_curves.png')
-    plt.show()
-
-from PIL import UnidentifiedImageError
-from tqdm import tqdm  # optional but helps track progress
 
 def cache_valid_indices_and_labels(dataset):
     pos_indices = []
@@ -98,6 +79,7 @@ def cache_valid_indices_and_labels(dataset):
 
     return pos_indices, neg_indices
 
+# 50/50 split
 def get_balanced_binary_datasets_fast(dataset, train_ratio=0.7, val_ratio=0.15):
     print("\nCreating balanced binary datasets (fast)...")
     pos_indices, neg_indices = cache_valid_indices_and_labels(dataset)
@@ -118,87 +100,13 @@ def get_balanced_binary_datasets_fast(dataset, train_ratio=0.7, val_ratio=0.15):
     return (Subset(dataset, train_indices),
             Subset(dataset, val_indices),
             Subset(dataset, test_indices))
-    
+
+# specific disease -> findings 
 def binary_collate_fn(batch):
     images, labels = zip(*batch)
     images = torch.stack(images)
     binary_labels = torch.stack([(label.sum() > 0).float().unsqueeze(0) for label in labels])
     return images, binary_labels
-  
-class PadChestDataset(Dataset):
-    def __init__(self, dataframe, image_dir, transform=None):
-        self.df = dataframe.reset_index(drop=True)
-        self.image_dir = image_dir
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.df)
-
-    def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        img_path = os.path.join(self.image_dir, row['ImageID'])
-
-        image = Image.open(img_path).convert('RGB')
-
-        if self.transform:
-            image = self.transform(image)
-
-        # Ensure the labels are in the correct shape [batch_size, 1]
-        label = torch.tensor(row['no_findings'], dtype=torch.float32).unsqueeze(0)
-        return image, label
-      
-def get_balanced_binary_datasets_from_each(chexpert_dataset, padchest_dataset, train_ratio=0.7, val_ratio=0.15):
-    def get_pos_neg_indices(dataset, name=""):
-        pos, neg = [], []
-        for i in tqdm(range(len(dataset)), desc=f"Caching labels for {name}"):
-            try:
-                _, label = dataset[i]
-                if torch.sum(label) > 0:
-                    pos.append(i)
-                else:
-                    neg.append(i)
-            except Exception as e:
-                print(f"Error at index {i} in {name}: {e}")
-        return pos, neg
-
-    chexpert_pos, chexpert_neg = get_pos_neg_indices(chexpert_dataset, "CheXpert")
-    padchest_pos, padchest_neg = get_pos_neg_indices(padchest_dataset, "PadChest")
-
-    min_pos = min(len(chexpert_pos), len(padchest_pos))
-    min_neg = min(len(chexpert_neg), len(padchest_neg))
-
-    def split_indices(indices, train_ratio, val_ratio):
-        np.random.shuffle(indices)
-        total = len(indices)
-        train_end = int(train_ratio * total)
-        val_end = train_end + int(val_ratio * total)
-        return indices[:train_end], indices[train_end:val_end], indices[val_end:]
-
-    splits = {}
-    for label, chex_indices, pad_indices in [
-        ('pos', chexpert_pos[:min_pos], padchest_pos[:min_pos]),
-        ('neg', chexpert_neg[:min_neg], padchest_neg[:min_neg])
-    ]:
-        chex_train, chex_val, chex_test = split_indices(chex_indices, train_ratio, val_ratio)
-        pad_train, pad_val, pad_test = split_indices(pad_indices, train_ratio, val_ratio)
-        splits[label] = {
-            'train': chex_train + pad_train,
-            'val': chex_val + pad_val,
-            'test': chex_test + pad_test
-        }
-
-    train_indices = splits['pos']['train'] + splits['neg']['train']
-    val_indices = splits['pos']['val'] + splits['neg']['val']
-    test_indices = splits['pos']['test'] + splits['neg']['test']
-    np.random.shuffle(train_indices)
-    np.random.shuffle(val_indices)
-    np.random.shuffle(test_indices)
-
-    combined_dataset = ConcatDataset([chexpert_dataset, padchest_dataset])
-    return (Subset(combined_dataset, train_indices),
-            Subset(combined_dataset, val_indices),
-            Subset(combined_dataset, test_indices))
-
 
 # training
 def train_model(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=10, patience=5):
@@ -267,7 +175,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, n
 
     return model, train_losses, val_losses
 
-# Evaluation function
+# testing
 def evaluate_model(model, test_loader, device):
     model.eval()
     all_labels, all_preds, all_scores = [], [], []
@@ -382,33 +290,7 @@ if __name__ == '__main__':
     main()
 
 
-
-
 # ---- testing on chexpert
-
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from torchvision import transforms
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
-import json
-from torchvision.models import efficientnet_b0
-import pandas as pd
-from tqdm import tqdm
-import os
-from torch.utils.data import Subset
-
-
-import os
-import pandas as pd
-from PIL import Image
-import torch
-from torch.utils.data import Dataset, DataLoader, Subset
-from torchvision import transforms
-import numpy as np
 
 # Define disease labels
 disease_labels = [
@@ -421,44 +303,12 @@ disease_labels = [
 pd.set_option('future.no_silent_downcasting', True)
 base_dir = '/shared/home/nas6781/'
 
-# Custom Dataset Class with improved validation
+# custom dataset
 class CheXpertDataset(Dataset):
-    def __init__(self, csv_file, transform=None, validate_files=False):
+    def __init__(self, csv_file, transform=None):
         self.data = pd.read_csv(csv_file)
         self.transform = transform or transforms.ToTensor()
         self.disease_labels = disease_labels
-        # self.valid_indices = None
-
-        # if validate_files:
-        #     self.valid_indices = self.validate_dataset()
-
-    # def validate_dataset(self):
-    #     """Pre-filter dataset to only include valid images with labels"""
-    #     print("Validating dataset files and labels...")
-    #     valid_indices = []
-
-    #     for idx, row in self.data.iterrows():
-    #         if idx % 1000 == 0:
-    #             print(f"Validated {idx}/{len(self.data)} entries...")
-
-    #         image_path = row['Path']
-
-    #         if image_path.startswith('._'):
-    #             continue
-
-    #         full_path = os.path.join(base_dir, image_path)
-
-    #         if not os.path.isfile(full_path):
-    #             continue
-
-    #         labels = row[disease_labels].fillna(0).replace(-1, 0)
-    #         if labels.isnull().all():
-    #             continue
-
-    #         valid_indices.append(idx)
-
-    #     print(f"Found {len(valid_indices)} valid images out of {len(self.data)} entries")
-    #     return valid_indices
 
     def __len__(self):
         # return len(self.valid_indices) if self.valid_indices is not None else len(self.data)
@@ -482,7 +332,7 @@ class CheXpertDataset(Dataset):
             # Return a black placeholder
             return torch.zeros(3, 224, 224), torch.zeros(len(self.disease_labels))
     
-        # Force resize BEFORE any other transform
+        # resize
         image = transforms.Resize((224, 224))(image)
         
         if self.transform:
@@ -492,60 +342,12 @@ class CheXpertDataset(Dataset):
         labels = labels.infer_objects(copy=False).astype(float)
         return image, torch.FloatTensor(labels.values)
 
-# Define Transformations
+# transformation (preprocessing)
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize([0.5], [0.5])
 ])
-
-
-def get_balanced_binary_datasets(dataset, train_ratio=0.7, val_ratio=0.15):
-    """Creates balanced binary classification datasets"""
-    print("\nCreating balanced binary datasets...")
-
-    pos_indices = []
-    neg_indices = []
-
-    for i in range(len(dataset)):
-        _, labels = dataset[i]
-
-        if torch.sum(labels) > 0:
-            pos_indices.append(i)
-        else:
-            neg_indices.append(i)
-
-    print(f"Found {len(pos_indices)} positive samples and {len(neg_indices)} negative samples")
-
-    min_count = min(len(pos_indices), len(neg_indices))
-    balanced_indices = pos_indices[:min_count] + neg_indices[:min_count]
-    print(f"Using {len(balanced_indices)} balanced samples ({min_count} per class)")
-
-    np.random.shuffle(balanced_indices)
-
-    total = len(balanced_indices)
-    train_size = int(train_ratio * total)
-    val_size = int(val_ratio * total)
-
-    train_indices = balanced_indices[:train_size]
-    val_indices = balanced_indices[train_size:train_size+val_size]
-    test_indices = balanced_indices[train_size+val_size:]
-
-    train_dataset = Subset(dataset, train_indices)
-    val_dataset = Subset(dataset, val_indices)
-    test_dataset = Subset(dataset, test_indices)
-
-    print(f"Split into {len(train_dataset)} train, {len(val_dataset)} val, {len(test_dataset)} test samples")
-
-    return train_dataset, val_dataset, test_dataset
-
-
-def binary_collate_fn(batch):
-    images, labels = zip(*batch)
-    images = torch.stack(images)
-    binary_labels = torch.stack([(label.sum() > 0).float().unsqueeze(0) for label in labels])
-    return images, binary_labels
-
 
 
 def cache_valid_indices_and_labels_chexpert(dataset):
@@ -565,6 +367,7 @@ def cache_valid_indices_and_labels_chexpert(dataset):
 
     return pos_indices, neg_indices
 
+# with caching to speed up
 def get_balanced_binary_datasets_fast(dataset, train_ratio=0.7, val_ratio=0.15):
     print("\nCreating balanced binary datasets (fast)...")
     pos_indices, neg_indices = cache_valid_indices_and_labels_chexpert(dataset)
@@ -586,6 +389,7 @@ def get_balanced_binary_datasets_fast(dataset, train_ratio=0.7, val_ratio=0.15):
             Subset(dataset, val_indices),
             Subset(dataset, test_indices))
 
+# data from chexpert
 def load_chexpert_data():
     # Load CheXpert dataset
     df = pd.read_csv('/shared/home/nas6781/CheXpert-v1.0-small/train.csv')
@@ -603,7 +407,8 @@ def load_chexpert_data():
     )
     
     return df
-
+    
+# padchest model
 def load_padchest_model(model_path, device):
     # Initialize model architecture
     model = efficientnet_b0(pretrained=False)
@@ -616,6 +421,7 @@ def load_padchest_model(model_path, device):
     model.eval()
     return model
 
+# testing 
 def evaluate_on_chexpert(model, test_loader, device):
     model.eval()
     all_labels, all_preds, all_scores = [], [], []
@@ -671,19 +477,29 @@ def evaluate_on_chexpert(model, test_loader, device):
 
     return metrics
 
+def plot_training_curves(train_losses, val_losses):
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label='Train Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('loss_curves.png')
+    plt.show()
+    
 def main():
-    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Load CheXpert dataset
+
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    # Create dataset
     print("Loading CheXpert dataset...")
     chexpert_dataset = CheXpertDataset(
         csv_file='/shared/home/nas6781/CheXpert-v1.0-small/train.csv',
@@ -692,7 +508,7 @@ def main():
     )
     print(f"Loaded {len(chexpert_dataset)} CheXpert images")
 
-    # Get test dataset
+
     print("Creating balanced test dataset...")
     _, _, test_dataset = get_balanced_binary_datasets_fast(chexpert_dataset)
     test_loader = DataLoader(
@@ -703,20 +519,14 @@ def main():
         collate_fn=binary_collate_fn
     )
     print(f"Created test dataset with {len(test_dataset)} images")
-
-    # Load PadChest model
     print("Loading PadChest model...")
     model = load_padchest_model('efficientnet_binary_model.pth', device)
 
-    # Evaluate
     print("Evaluating model...")
     metrics = evaluate_on_chexpert(model, test_loader, device)
-
-    # Save results
     with open('padchest_on_chexpert_results.json', 'w') as f:
         json.dump(metrics, f, indent=2)
 
-    # Print results
     print("\nEvaluation Results (PadChest on CheXpert):")
     for metric, value in metrics.items():
         print(f"{metric.capitalize()}: {value:.4f}")
