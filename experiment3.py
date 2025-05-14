@@ -2,71 +2,45 @@ import os
 import pandas as pd
 from PIL import Image
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
-from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset
+from torchvision import transforms, efficientnet_b0
 import numpy as np
+from PIL import UnidentifiedImageError
+from tqdm import tqdm  
+import pandas as pd
+import ast
+import os
+import torch.nn as nn
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
+import json
 
-# Define disease labels
+
+# disease labels
 disease_labels = [
     'No Finding', 'Enlarged Cardiomediastinum', 'Cardiomegaly', 'Lung Opacity',
     'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis',
     'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture', 'Support Devices'
 ]
 
-# Set pandas option to avoid warnings
 pd.set_option('future.no_silent_downcasting', True)
 base_dir = '/shared/home/nas6781/'
 
-# Custom Dataset Class with improved validation
+# custom dataset for chexpert
 class CheXpertDataset(Dataset):
     def __init__(self, csv_file, transform=None, validate_files=False):
         self.data = pd.read_csv(csv_file)
         self.transform = transform or transforms.ToTensor()
         self.disease_labels = disease_labels
-        # self.valid_indices = None
-
-        # if validate_files:
-        #     self.valid_indices = self.validate_dataset()
-
-    # def validate_dataset(self):
-    #     """Pre-filter dataset to only include valid images with labels"""
-    #     print("Validating dataset files and labels...")
-    #     valid_indices = []
-
-    #     for idx, row in self.data.iterrows():
-    #         if idx % 1000 == 0:
-    #             print(f"Validated {idx}/{len(self.data)} entries...")
-
-    #         image_path = row['Path']
-
-    #         if image_path.startswith('._'):
-    #             continue
-
-    #         full_path = os.path.join(base_dir, image_path)
-
-    #         if not os.path.isfile(full_path):
-    #             continue
-
-    #         labels = row[disease_labels].fillna(0).replace(-1, 0)
-    #         if labels.isnull().all():
-    #             continue
-
-    #         valid_indices.append(idx)
-
-    #     print(f"Found {len(valid_indices)} valid images out of {len(self.data)} entries")
-    #     return valid_indices
 
     def __len__(self):
         # return len(self.valid_indices) if self.valid_indices is not None else len(self.data)
         return len(self.data)
 
     def __getitem__(self, idx):
-        # if self.valid_indices is not None:
-        #     data_idx = self.valid_indices[idx]
-        # else:
-        #     data_idx = idx
-    
-        # row = self.data.iloc[data_idx]
+
         row = self.data.iloc[idx]
         image_path = row['Path']
         full_path = os.path.join(base_dir, image_path)
@@ -78,7 +52,7 @@ class CheXpertDataset(Dataset):
             # Return a black placeholder
             return torch.zeros(3, 224, 224), torch.zeros(len(self.disease_labels))
     
-        # Force resize BEFORE any other transform
+        # resize
         image = transforms.Resize((224, 224))(image)
         
         if self.transform:
@@ -88,64 +62,24 @@ class CheXpertDataset(Dataset):
         labels = labels.infer_objects(copy=False).astype(float)
         return image, torch.FloatTensor(labels.values)
 
-# Define Transformations
+#  Transformations for preprocessing
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize([0.5], [0.5])
 ])
 
-# No need for collate_fn if we validate the dataset first
-def get_balanced_binary_datasets(dataset, train_ratio=0.7, val_ratio=0.15):
-    """Creates balanced binary classification datasets"""
-    print("\nCreating balanced binary datasets...")
 
-    pos_indices = []
-    neg_indices = []
-
-    for i in range(len(dataset)):
-        _, labels = dataset[i]
-
-        if torch.sum(labels) > 0:
-            pos_indices.append(i)
-        else:
-            neg_indices.append(i)
-
-    print(f"Found {len(pos_indices)} positive samples and {len(neg_indices)} negative samples")
-
-    min_count = min(len(pos_indices), len(neg_indices))
-    balanced_indices = pos_indices[:min_count] + neg_indices[:min_count]
-    print(f"Using {len(balanced_indices)} balanced samples ({min_count} per class)")
-
-    np.random.shuffle(balanced_indices)
-
-    total = len(balanced_indices)
-    train_size = int(train_ratio * total)
-    val_size = int(val_ratio * total)
-
-    train_indices = balanced_indices[:train_size]
-    val_indices = balanced_indices[train_size:train_size+val_size]
-    test_indices = balanced_indices[train_size+val_size:]
-
-    train_dataset = Subset(dataset, train_indices)
-    val_dataset = Subset(dataset, val_indices)
-    test_dataset = Subset(dataset, test_indices)
-
-    print(f"Split into {len(train_dataset)} train, {len(val_dataset)} val, {len(test_dataset)} test samples")
-
-    return train_dataset, val_dataset, test_dataset
-
-# Binary collate function
+# specific diseases -> binary
 def binary_collate_fn(batch):
     images, labels = zip(*batch)
     images = torch.stack(images)
     binary_labels = torch.stack([(label.sum() > 0).float().unsqueeze(0) for label in labels])
     return images, binary_labels
 
-import pandas as pd
-import ast
 
-# Load from scratch
+
+# disease labels adjusting 
 df = pd.read_csv('/shared/home/nas6781/PADCHEST_chest_x_ray_images_labels_160K_01.02.19.csv')
 df = df.dropna(subset=['Labels', 'ImageID'])
 df['ImageID'] = df['ImageID'].astype(str)
@@ -162,7 +96,6 @@ df['Labels'] = df['Labels'].apply(safe_eval)
 df['no_findings'] = df['Labels'].apply(
     lambda x: 1 if len(x) == 1 and isinstance(x[0], str) and x[0].strip().lower() == 'normal' else 0
 )
-import os
 
 image_dir = '/shared/home/nas6781/Padchest'
 existing_images = set(os.listdir(image_dir))
@@ -170,9 +103,6 @@ existing_images = set(os.listdir(image_dir))
 df = df[df['ImageID'].isin(existing_images)]
 
 
-from PIL import Image
-import torch
-from torch.utils.data import Dataset
 
 class PadChestDataset(Dataset):
     def __init__(self, dataframe, image_dir, transform=None):
@@ -211,88 +141,8 @@ images, labels = next(iter(loader))
 print("Batch shape:", images.shape)
 print("Batch labels:", labels[:5])
 
-def plot_training_curves(train_losses, val_losses):
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(val_losses, label='Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig('loss_curves.png')
-    plt.show()
 
-from PIL import UnidentifiedImageError
-from tqdm import tqdm  # optional but helps track progress
-
-def cache_valid_indices_and_labels(dataset):
-    pos_indices = []
-    neg_indices = []
-
-    for i in tqdm(range(len(dataset)), desc="Caching labels"):
-        row = dataset.df.iloc[i]
-        img_path = os.path.join(dataset.image_dir, row['ImageID'])
-
-        # Skip if image does not exist or cannot be opened
-        if not os.path.exists(img_path):
-            continue
-
-        try:
-            Image.open(img_path).verify()  # Very fast check without full load
-        except (UnidentifiedImageError, OSError):
-            continue
-
-        label = torch.tensor(row['no_findings'], dtype=torch.float32)
-        if label > 0:
-            neg_indices.append(i)  # no findings = negative
-        else:
-            pos_indices.append(i)  # any finding = positive
-
-    return pos_indices, neg_indices
-
-def get_balanced_binary_datasets_fast(dataset, train_ratio=0.7, val_ratio=0.15):
-    print("\nCreating balanced binary datasets (fast)...")
-    pos_indices, neg_indices = cache_valid_indices_and_labels(dataset)
-
-    print(f"Found {len(pos_indices)} positive and {len(neg_indices)} negative samples")
-    min_count = min(len(pos_indices), len(neg_indices))
-    balanced_indices = pos_indices[:min_count] + neg_indices[:min_count]
-    np.random.shuffle(balanced_indices)
-
-    total = len(balanced_indices)
-    train_size = int(train_ratio * total)
-    val_size = int(val_ratio * total)
-
-    train_indices = balanced_indices[:train_size]
-    val_indices = balanced_indices[train_size:train_size + val_size]
-    test_indices = balanced_indices[train_size + val_size:]
-
-    return (Subset(dataset, train_indices),
-            Subset(dataset, val_indices),
-            Subset(dataset, test_indices))
-    
-def binary_collate_fn(batch):
-    images, labels = zip(*batch)
-    images = torch.stack(images)
-    binary_labels = torch.stack([(label.sum() > 0).float().unsqueeze(0) for label in labels])
-    return images, binary_labels
-
-
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset
-from torchvision import transforms
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
-import json
-from torchvision.models import efficientnet_b0
-import pandas as pd
-from tqdm import tqdm
-import os
-
+# caching for faster balancing
 def cache_valid_indices_and_labels_combined(dataset):
     pos_indices = []
     neg_indices = []
@@ -309,7 +159,7 @@ def cache_valid_indices_and_labels_combined(dataset):
             continue
 
     return pos_indices, neg_indices
-
+# 50/50 splits
 def get_balanced_binary_datasets_fast(dataset, train_ratio=0.7, val_ratio=0.15):
     print("\nCreating balanced binary datasets (fast)...")
     pos_indices, neg_indices = cache_valid_indices_and_labels_combined(dataset)
@@ -331,6 +181,7 @@ def get_balanced_binary_datasets_fast(dataset, train_ratio=0.7, val_ratio=0.15):
             Subset(dataset, val_indices),
             Subset(dataset, test_indices))
 
+# training
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=20, patience=5):
     train_losses, val_losses = [], []
     best_val_loss = float('inf')
@@ -391,6 +242,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
     return model, train_losses, val_losses
 
+# evaluation
 def evaluate_model(model, test_loader, device, dataset_name):
     model.eval()
     all_labels, all_preds, all_scores = [], [], []
@@ -420,7 +272,7 @@ def evaluate_model(model, test_loader, device, dataset_name):
         'auroc': roc_auc_score(all_labels, all_scores)
     }
 
-    # Plot ROC curve
+    #  ROC curve
     fpr, tpr, _ = roc_curve(all_labels, all_scores)
     plt.figure()
     plt.plot(fpr, tpr, label=f'AUC = {metrics["auroc"]:.2f}')
@@ -447,18 +299,16 @@ def evaluate_model(model, test_loader, device, dataset_name):
     return metrics
 
 def main():
-    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Define transforms
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    # Load CheXpert dataset
+    # chexpert dataset
     print("Loading CheXpert dataset...")
     chexpert_dataset = CheXpertDataset(
         csv_file='/shared/home/nas6781/CheXpert-v1.0-small/train.csv',
@@ -467,20 +317,20 @@ def main():
     )
     print(f"Loaded {len(chexpert_dataset)} CheXpert images")
 
-    # Load PadChest dataset
+    # padchest dataset
     print("Loading PadChest dataset...")
     padchest_dataset = PadChestDataset(
-        dataframe=df,  # Your PadChest dataframe
+        dataframe=df,  
         image_dir='/shared/home/nas6781/Padchest',
         transform=transform
     )
     print(f"Loaded {len(padchest_dataset)} PadChest images")
 
-    # Combine datasets
+    # combine balanced
     combined_dataset = ConcatDataset([chexpert_dataset, padchest_dataset])
     print(f"Combined dataset size: {len(combined_dataset)}")
 
-    # Create balanced splits
+    # splits
     print("Creating balanced splits...")
     train_dataset, val_dataset, test_dataset = get_balanced_binary_datasets_from_each(chexpert_dataset, padchest_dataset)
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
