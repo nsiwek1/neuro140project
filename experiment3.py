@@ -332,10 +332,10 @@ def main():
 
     # splits
     print("Creating balanced splits...")
-    train_dataset, val_dataset, test_dataset = get_balanced_binary_datasets_from_each(chexpert_dataset, padchest_dataset)
+    train_dataset, val_dataset, test_dataset = get_balanced_binary_datasets_fast(chexpert_dataset, padchest_dataset)
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
-    # Create data loaders
+    # loading into sets
     train_loader = DataLoader(
         train_dataset,
         batch_size=32,
@@ -357,33 +357,26 @@ def main():
         num_workers=2,
         collate_fn=binary_collate_fn
     )
-
-    # Initialize model
     print("Initializing model...")
     model = efficientnet_b0(pretrained=True)
     model.classifier[1] = nn.Linear(model.classifier[1].in_features, 1)
     model = model.to(device)
 
-    # Training setup
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
 
-    # Train model
     print("Training model...")
     model, train_losses, val_losses = train_model(
         model, train_loader, val_loader, criterion, optimizer, scheduler, device
     )
-
-    # Save model
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'train_losses': train_losses,
         'val_losses': val_losses,
     }, 'combined_model.pth')
-
-    # Create separate test loaders for each dataset
+    #testing
     chexpert_test_loader = DataLoader(
         Subset(chexpert_dataset, range(len(chexpert_dataset))),
         batch_size=32,
@@ -399,7 +392,6 @@ def main():
         collate_fn=binary_collate_fn
     )
 
-    # Evaluate on both datasets
     print("\nEvaluating on CheXpert...")
     chexpert_metrics = evaluate_model(model, chexpert_test_loader, device, "CheXpert")
     with open('combined_model_chexpert_results.json', 'w') as f:
@@ -410,7 +402,7 @@ def main():
     with open('combined_model_padchest_results.json', 'w') as f:
         json.dump(padchest_metrics, f, indent=2)
 
-    # Print results
+    #  results
     print("\nResults on CheXpert:")
     for metric, value in chexpert_metrics.items():
         print(f"{metric.capitalize()}: {value:.4f}")
