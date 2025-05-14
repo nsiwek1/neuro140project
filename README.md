@@ -8,6 +8,7 @@ Due to that the .ipynb files are not cleaned up, but they still show most of the
 
 Each .py file contains code for a specific experiment, as described in the report. Final Writeup contains the details of methods, results and conclusions.
 
+Demo video is in the canvas comment. 
 ## acknowledgements
 
 All code was written by me, experiment 3 version 2 was conceptually inspired by "A generalized deep learning model for multi-disease Chest X-Ray diagnostics" Bajwa et al.
