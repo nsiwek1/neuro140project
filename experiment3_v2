@@ -15,16 +15,17 @@ from tqdm import tqdm
 from PIL import Image
 import warnings
 
-# Suppress the specific FutureWarning about downcasting
+
 warnings.filterwarnings('ignore', category=FutureWarning, message='Downcasting object dtype arrays on .fillna')
 
-# Define disease labels for CheXpert
+#  disease labels
 disease_labels = [
     'No Finding', 'Enlarged Cardiomediastinum', 'Cardiomegaly', 'Lung Opacity',
     'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis',
     'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture', 'Support Devices'
 ]
 
+# custom datset
 class CheXpertDataset(Dataset):
     def __init__(self, csv_file, transform=None):
         self.data = pd.read_csv(csv_file)
@@ -52,7 +53,7 @@ class CheXpertDataset(Dataset):
         labels = row[disease_labels].fillna(0).replace(-1, 0)
         labels = labels.infer_objects(copy=False).astype(float)
         return image, torch.FloatTensor(labels.values)
-
+#cusotm dataset
 class PadChestDataset(Dataset):
     def __init__(self, dataframe, image_dir, transform=None):
         self.df = dataframe.reset_index(drop=True)
@@ -77,7 +78,7 @@ class PadChestDataset(Dataset):
 
         label = torch.tensor(row['no_findings'], dtype=torch.float32).unsqueeze(0)
         return image, label
-
+# balancing sets
 def get_balanced_binary_datasets_fast(dataset):
     """Creates balanced binary classification datasets using vectorized operations"""
     print("\nCreating balanced binary datasets...")
@@ -129,12 +130,14 @@ def get_balanced_binary_datasets_fast(dataset):
             Subset(dataset, val_indices),
             Subset(dataset, test_indices))
 
+# specific disease to findings
 def binary_collate_fn(batch):
     images, labels = zip(*batch)
     images = torch.stack(images)
     binary_labels = torch.stack([(label.sum() > 0).float().unsqueeze(0) for label in labels])
     return images, binary_labels
 
+#padchest data
 def load_padchest_data():
     """Load and preprocess PadChest dataset"""
     print("Loading PadChest data...")
@@ -164,8 +167,9 @@ def load_padchest_data():
     
     print(f"Loaded {len(df)} PadChest images")
     return df
+
+#data augmentation
 def get_transforms():
-    """Get train and validation transforms with augmentation"""
     train_transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(),
@@ -184,6 +188,7 @@ def get_transforms():
 
     return train_transform, val_transform
 
+# training
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=30, patience=5):
     """Train model with early stopping"""
     train_losses, val_losses = [], []
@@ -323,18 +328,14 @@ def evaluate_dataset(model, dataset, device, dataset_name):
     return metrics, all_labels, all_preds, all_scores
 
 
-# Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Load datasets
 print("Loading datasets...")
 df_padchest = load_padchest_data()
 
-# Get transforms
 train_transform, val_transform = get_transforms()
 
-# Create datasets
 padchest_dataset = PadChestDataset(
     dataframe=df_padchest,
     image_dir='/shared/home/nas6781/Padchest',
@@ -346,17 +347,15 @@ chexpert_dataset = CheXpertDataset(
     transform=train_transform
 )
 
-# Get balanced splits
+# balancing
 print("Creating balanced splits...")
 padchest_train, padchest_val, padchest_test = get_balanced_binary_datasets_fast(padchest_dataset)
 chexpert_train, chexpert_val, chexpert_test = get_balanced_binary_datasets_fast(chexpert_dataset)
 
-# Combine datasets
 train_dataset = ConcatDataset([padchest_train, chexpert_train])
 val_dataset = ConcatDataset([padchest_val, chexpert_val])
 test_dataset = ConcatDataset([padchest_test, chexpert_test])
 
-# Create data loaders
 train_loader = DataLoader(
     train_dataset,
     batch_size=32,
@@ -379,18 +378,17 @@ test_loader = DataLoader(
     collate_fn=binary_collate_fn
 )
 
-# Initialize DenseNet-121 model
+# dense net 121 model
 print("Initializing DenseNet-121 model...")
 model = models.densenet121(pretrained=True)
 model.classifier = nn.Linear(model.classifier.in_features, 1)
 model = model.to(device)
 
-# Training setup
+
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
-# Train model
 print("Starting training...")
 model, train_losses, val_losses = train_model(
     model,
@@ -404,30 +402,28 @@ model, train_losses, val_losses = train_model(
     patience=5
 )
 
-# Plot training curves
+# training val curves
 plot_training_curves(train_losses, val_losses, 'training_curves.png')
 
 print("Training completed!")
 
-# Load best model for testing
 print("\nLoading best model for testing...")
 checkpoint = torch.load('best_combined_model.pth')
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
-# Evaluate on CheXpert test set
+# testing chexpert
 chexpert_metrics, chexpert_labels, chexpert_preds, chexpert_scores = evaluate_dataset(
     model, chexpert_test, device, "CheXpert"
 )
 plot_dataset_results(chexpert_metrics, chexpert_labels, chexpert_preds, chexpert_scores, "CheXpert")
 
-# Evaluate on PadChest test set
+#padchest testing
 padchest_metrics, padchest_labels, padchest_preds, padchest_scores = evaluate_dataset(
     model, padchest_test, device, "PadChest"
 )
 plot_dataset_results(padchest_metrics, padchest_labels, padchest_preds, padchest_scores, "PadChest")
 
-# Save test metrics
 results = {
     'CheXpert': chexpert_metrics,
     'PadChest': padchest_metrics
@@ -435,14 +431,13 @@ results = {
 with open('test_metrics.json', 'w') as f:
     json.dump(results, f, indent=2)
 
-# Print test results
 print("\nTest Set Results:")
 for dataset_name, metrics in results.items():
     print(f"\n{dataset_name} Results:")
     for metric, value in metrics.items():
         print(f"{metric.capitalize()}: {value:.4f}")
 
-
+# combined figure for all
 def plot_explicit_results(chexpert_metrics, chexpert_labels, chexpert_preds, chexpert_scores,
                          padchest_metrics, padchest_labels, padchest_preds, padchest_scores):
     """Plot explicit ROC curves and confusion matrices for both datasets"""
@@ -529,7 +524,7 @@ def plot_explicit_results(chexpert_metrics, chexpert_labels, chexpert_preds, che
     for metric, value in padchest_metrics.items():
         print(f"{metric.capitalize()}: {value:.4f}")
 
-# Call the function after evaluation
+
 plot_explicit_results(
     chexpert_metrics, chexpert_labels, chexpert_preds, chexpert_scores,
     padchest_metrics, padchest_labels, padchest_preds, padchest_scores
