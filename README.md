@@ -1,17 +1,11 @@
-# neuro140project
-project for neuro 140 (human & artificial intelligence) - generazability of x-ray datasets in medical context
-
+# neuro140 project
+project for neuro 140 (human & artificial intelligence) - generazability models for chest diseases recognition 
 
 ## repo structure
-I used the Jupyter Notebook for most of my project but as i was reusing certain cells multiple times/with checking different versions of code
-Due to that the .ipynb files are not cleaned up, but they still show most of the results used in the paper. The .py files have cleaned version of code that should be better to read through.
-
-Each .py file contains code for a specific experiment, as described in the report. Final Writeup contains the details of methods, results and conclusions.
-
-Demo video is in the canvas comment. 
+read the write up for the experiments describtion and results, code for each in separate .py file
 ## acknowledgements
 
-All code was written by me, experiment 3 version 2 was conceptually inspired by "A generalized deep learning model for multi-disease Chest X-Ray diagnostics" Bajwa et al.
+experiment 3 version 2 was conceptually inspired by "A generalized deep learning model for multi-disease Chest X-Ray diagnostics" Bajwa et al.
 
 
 
